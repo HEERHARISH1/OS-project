@@ -1,0 +1,182 @@
+#include <SFML/Graphics.hpp>
+#include <iostream>
+#include <thread>
+#include <array>
+#include <string>
+#include <mutex>  // for std::mutex
+#include <atomic> // for std::atomic
+
+constexpr int LINE_THICKNESS = 5;
+constexpr int MAP_WIDTH = 41;
+constexpr int MAP_HEIGHT = 22;
+constexpr int TILE_SIZE = 30;
+
+// Define symbols for game board elements
+enum class CellType { Wall, Path, Pellet, PowerPellet, Pacman, Ghost };
+
+struct Cell {
+    std::atomic<CellType> type;
+    std::atomic<char> character; // Character representation on the map
+};
+
+// Shared game board accessible to all threads
+std::array<std::array<Cell, MAP_WIDTH>, MAP_HEIGHT> gameBoard;
+
+// Mutex for accessing shared resources
+std::mutex mutex;
+
+std::array<std::string, MAP_HEIGHT> map_sketch = {
+    " ###################                     ",
+    " #........#........#                     ",
+    " #o##.###.#.###.##o#                     ",
+    " #.................#                     ",
+    " #.##.#.#####.#.##.#                     ",
+    " #....#...#...#....#                     ",
+    " ####.### # ###.####                     ",
+    "    #.#   0   #.#                        ",
+    "#####.# ##=## #.#####                    ",
+    "     .  #   #  .                         ",
+    "     .  #123#  .                         ",
+    "#####.# ##### #.#####                    ",
+    "    #.#       #.#                        ",
+    " ####.# ##### #.####                     ",
+    " #........#........#                     ",
+    " #.##.###.#.###.##.#                     ",
+    " #o.#.....P.....#.o#                     ",
+    " ##.#.#.#####.#.#.##                     ",
+    " #....#...#...#....#                     ",
+    " #.######.#.######.#                     ",
+    " #.................#                     ",
+    " ###################                     "
+};
+
+sf::Color getGhostColor(char number) {
+    switch (number) {
+        case '1': return sf::Color::Red;
+        case '2': return sf::Color::Green;
+        case '3': return sf::Color::Blue;
+        default:  return sf::Color::White;
+    }
+}
+
+void drawGhost(sf::RenderWindow& window, int x, int y, sf::Color color) {
+    sf::CircleShape head(TILE_SIZE / 4);
+    head.setFillColor(color);
+    head.setPosition(x * TILE_SIZE + TILE_SIZE / 4, y * TILE_SIZE + TILE_SIZE / 8);
+
+    sf::RectangleShape body(sf::Vector2f(TILE_SIZE / 2, TILE_SIZE / 2));
+    body.setFillColor(color);
+    body.setPosition(x * TILE_SIZE + TILE_SIZE / 4, y * TILE_SIZE + TILE_SIZE * 3 / 8);
+
+    window.draw(head);
+    window.draw(body);
+}
+
+void drawPacman(sf::RenderWindow& window, int x, int y) {
+    sf::CircleShape pacman(TILE_SIZE / 3); // Smaller circle for Pac-Man
+    pacman.setFillColor(sf::Color::Yellow);
+    pacman.setPosition(x * TILE_SIZE + TILE_SIZE / 3, y * TILE_SIZE + TILE_SIZE / 3);
+
+    window.draw(pacman);
+}
+
+void gameEngine(sf::RenderWindow& window) {
+    // Find Pac-Man's initial position
+    int pacmanX = 0, pacmanY = 0;
+    for (int y = 0; y < MAP_HEIGHT; ++y) {
+        for (int x = 0; x < MAP_WIDTH; ++x) {
+            if (gameBoard[y][x].character == 'P') {
+                pacmanX = x;
+                pacmanY = y;
+            }
+        }
+    }
+
+    while (window.isOpen()) {
+        sf::Event event;
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed)
+                window.close();
+
+            mutex.lock(); // Lock access to shared resources
+            if (event.type == sf::Event::KeyPressed) {
+                int dx = 0, dy = 0;
+                switch (event.key.code) {
+                    case sf::Keyboard::Left: dx = -1; break;
+                    case sf::Keyboard::Right: dx = 1; break;
+                    case sf::Keyboard::Up: dy = -1; break;
+                    case sf::Keyboard::Down: dy = 1; break;
+                    default: break;
+                }
+
+                // Calculate new position
+                int newX = pacmanX + dx;
+                int newY = pacmanY + dy;
+
+                // Check for wall collisions and out of bounds
+                if (newX >= 0 && newX < MAP_WIDTH && newY >= 0 && newY < MAP_HEIGHT) {
+                    if (gameBoard[newY][newX].type != CellType::Wall) {
+                        // Update Pac-Man's position
+                        gameBoard[pacmanY][pacmanX].character = '.';
+                        gameBoard[newY][newX].character = 'P';
+                        pacmanX = newX;
+                        pacmanY = newY;
+                    }
+                }
+            }
+            mutex.unlock(); // Unlock access
+        }
+
+        mutex.lock(); // Lock access to shared resources
+        window.clear(sf::Color::Black);  // Set background to black
+
+        for (int y = 0; y < MAP_HEIGHT; y++) {
+            for (int x = 0; x < MAP_WIDTH; x++) {
+                char cell = map_sketch[y][x];
+                if (cell == '1' || cell == '2' || cell == '3') {
+                    sf::Color ghostColor = getGhostColor(cell);
+                    drawGhost(window, x, y, ghostColor);
+                } else if (cell == 'P') { // Pac-Man
+                    drawPacman(window, x, y);
+                } else if (cell == '#') {
+                    // Drawing walls
+                    sf::RectangleShape wall(sf::Vector2f(TILE_SIZE, TILE_SIZE));
+                    wall.setFillColor(sf::Color::Magenta);
+                    wall.setPosition(x * TILE_SIZE, y * TILE_SIZE);
+                    window.draw(wall);
+                }
+            }
+        }
+
+        mutex.unlock(); // Unlock access to shared resources
+
+        window.display();
+    }
+}
+
+int main() {
+    // Initialize all cells to paths
+    for (int y = 0; y < MAP_HEIGHT; ++y) {
+        for (int x = 0; x < MAP_WIDTH; ++x) {
+            gameBoard[y][x].type = CellType::Path;
+            gameBoard[y][x].character = '.';
+        }
+    }
+
+    // Place walls according to map sketch
+    for (int y = 0; y < MAP_HEIGHT; ++y) {
+        for (int x = 0; x < MAP_WIDTH; ++x) {
+            if (map_sketch[y][x] == '#') {
+                gameBoard[y][x].type = CellType::Wall;
+                gameBoard[y][x].character = '#';
+            }
+        }
+    }
+
+    sf::RenderWindow window(sf::VideoMode(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE), "SFML Maze Game");
+
+    std::thread engineThread(gameEngine, std::ref(window));
+    engineThread.join();
+
+    return 0;
+}
